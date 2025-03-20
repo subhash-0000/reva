@@ -134,7 +134,7 @@ def train_face_recognition_model(person_name, face_encodings_list):
         return False
 
 def identify_person(face_encoding):
-    """Identify a person using their face encoding."""
+    """Identify a person using their face encoding with distance threshold."""
     known_persons = KnownPerson.objects()
     
     if not known_persons:
@@ -143,12 +143,14 @@ def identify_person(face_encoding):
     known_encodings = [np.array(person.face_encoding) for person in known_persons]
     known_names = [person.name for person in known_persons]
     
-    # Compare face with known faces
-    matches = face_recognition.compare_faces(known_encodings, face_encoding)
+    # Calculate face distances
+    face_distances = face_recognition.face_distance(known_encodings, face_encoding)
     
-    if True in matches:
-        first_match_index = matches.index(True)
-        return known_names[first_match_index]
+    # Find best match if any face distance is below threshold
+    best_match_index = np.argmin(face_distances)
+    if face_distances[best_match_index] < 0.6:  # Adjust threshold (0.6 is default)
+        confidence = round((1 - face_distances[best_match_index]) * 100, 2)
+        return f"{known_names[best_match_index]} ({confidence}%)"
     
     return "Unknown"
 
@@ -191,23 +193,43 @@ def test_identification():
     if not cap.isOpened():
         return jsonify({"error": "Could not access webcam"}), 500
 
+    print("Starting face identification test...")
+    print("Press 'q' to quit")
+
     while True:
         ret, frame = cap.read()
         if not ret:
             continue
 
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        face_locations = face_recognition.face_locations(rgb_frame)
-        face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+        # Resize frame for faster face detection
+        small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+        rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+        
+        # Find faces in frame
+        face_locations = face_recognition.face_locations(rgb_small_frame)
+        face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
+
+        # Scale back face locations
+        face_locations = [(top * 4, right * 4, bottom * 4, left * 4) 
+                         for (top, right, bottom, left) in face_locations]
 
         for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
             # Identify the person
             name = identify_person(face_encoding)
 
-            # Draw rectangle and name
+            # Draw rectangle
             cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
-            cv2.putText(frame, name, (left, top - 10), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+            
+            # Draw filled rectangle for name background
+            cv2.rectangle(frame, (left, top - 35), (right, top), (0, 255, 0), cv2.FILLED)
+            
+            # Put name text
+            cv2.putText(frame, name, (left + 6, top - 6), 
+                       cv2.FONT_HERSHEY_DUPLEX, 0.6, (255, 255, 255), 1)
+
+        # Display the number of faces detected
+        cv2.putText(frame, f'Faces detected: {len(face_locations)}', (10, 30), 
+                    cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 0), 1)
 
         cv2.imshow("Face Identification Test", frame)
 
@@ -217,6 +239,21 @@ def test_identification():
     cap.release()
     cv2.destroyAllWindows()
     return jsonify({"message": "Identification test completed"}), 200
+
+@app.route("/list_trained_faces", methods=["GET"])
+def list_trained_faces():
+    """List all trained faces in the database."""
+    known_persons = KnownPerson.objects()
+    trained_faces = [{
+        "name": person.name,
+        "id": person.known_person_id,
+        "patient_id": person.patient_id
+    } for person in known_persons]
+    
+    return jsonify({
+        "total_faces": len(trained_faces),
+        "trained_faces": trained_faces
+    }), 200
 
 if __name__ == "__main__":
     print("Starting Flask app...")
